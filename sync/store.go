@@ -37,8 +37,10 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Truncate(path, valid); err != nil {
-		return nil, err
+	if valid > 0 {
+		if err := os.Truncate(path, valid); err != nil {
+			return nil, err
+		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {

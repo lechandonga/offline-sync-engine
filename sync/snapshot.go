@@ -41,6 +41,8 @@ func (e *Engine) loadSnapshot(path string) error {
 		return err
 	}
 	e.vv = s.Vector.Clone()
+	e.baseVV = s.Vector.Clone()
+	e.base = s
 	for k, se := range s.Entries {
 		e.state[k] = entry{value: se.Value, deleted: se.Deleted, hlc: se.HLC}
 	}
@@ -110,5 +112,53 @@ func (e *Engine) Compact() error {
 		return err
 	}
 	e.changes = remaining
+	e.baseVV = snap.Vector.Clone()
+	e.base = snap
+	return nil
+}
+
+// ExportSnapshot 返回当前压缩基线快照的拷贝，
+// 用于让落后太多（增量日志已无法覆盖）的副本追赶。
+func (e *Engine) ExportSnapshot() Snapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := Snapshot{
+		Vector:  e.baseVV.Clone(),
+		Entries: make(map[string]SnapshotEntry, len(e.base.Entries)),
+	}
+	for k, se := range e.base.Entries {
+		out.Entries[k] = se
+	}
+	return out
+}
+
+// InstallSnapshot 将远端基线快照逐 key 按 LWW 合并进本地状态，
+// 合并版本向量并持久化新基线。只合并不比本地新的条目，
+// 因此安装快照不会覆盖本地已确认的更新。
+func (e *Engine) InstallSnapshot(s Snapshot) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, se := range s.Entries {
+		if en, ok := e.state[k]; !ok || en.hlc.Compare(se.HLC) < 0 {
+			e.state[k] = entry{value: se.Value, deleted: se.Deleted, hlc: se.HLC}
+		}
+	}
+	e.vv.Merge(s.Vector)
+	// 推进本地压缩基线并持久化，保证重启后不需要对方再次提供快照。
+	merged := Snapshot{Vector: e.baseVV.Clone(), Entries: map[string]SnapshotEntry{}}
+	for k, se := range e.base.Entries {
+		merged.Entries[k] = se
+	}
+	for k, se := range s.Entries {
+		if en, ok := merged.Entries[k]; !ok || en.HLC.Compare(se.HLC) < 0 {
+			merged.Entries[k] = se
+		}
+	}
+	merged.Vector.Merge(s.Vector)
+	if err := saveSnapshot(e.snapshotPath(), merged); err != nil {
+		return err
+	}
+	e.base = merged
+	e.baseVV = merged.Vector.Clone()
 	return nil
 }

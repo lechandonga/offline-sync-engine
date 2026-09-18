@@ -29,6 +29,8 @@ type Engine struct {
 	vv      VersionVector
 	pending map[ChangeID]Change // 已应用但序号未连续的变更（乱序到达）
 	changes []Change             // 压缩基线之后的全部变更（用于增量同步）
+	baseVV  VersionVector       // 最近一次快照（压缩）覆盖的版本向量
+	base    Snapshot            // 基线快照内容，用于向落后太多的副本传输
 }
 
 // Open 在指定目录打开（或创建）一个副本引擎，并执行崩溃恢复：
